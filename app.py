@@ -1,15 +1,16 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import desc as sa_desc, asc as sa_asc, create_engine
+from sqlalchemy import desc as sa_desc, asc as sa_asc, create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from typing import List, Optional, Dict, Any, Callable
+from typing import List, Optional, Dict, Any, Callable, Union
 from datetime import datetime, timedelta
 from pathlib import Path
 import os
+import json
 from dotenv import load_dotenv
 
 # Get the directory where this script is located
@@ -47,14 +48,23 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Authentication middleware
 class BearerAuth(HTTPBearer):
-    async def __call__(self, request: Request):
+    async def __call__(self, request: Request) -> Optional[HTTPAuthorizationCredentials]:
         # Skip auth for health check endpoint
         if request.url.path == "/health":
             return None
             
-        credentials: HTTPAuthorizationCredentials = await super().__call__(request)
+        credentials = await super().__call__(request)
         
         if credentials:
             if not credentials.scheme == "Bearer":
@@ -79,7 +89,7 @@ auth = BearerAuth()
 
 # Add middleware to verify token for all routes
 @app.middleware("http")
-async def verify_token_middleware(request: Request, call_next: Callable):
+async def verify_token_middleware(request: Request, call_next: Callable) -> Response:
     
     # Skip auth for health check endpoint
     if request.url.path != "/health":
@@ -93,34 +103,7 @@ async def verify_token_middleware(request: Request, call_next: Callable):
             )
     return await call_next(request)
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Database setup
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./reports.db")
-
-# Create database directory if it doesn't exist
-db_path = Path("reports.db")
-db_path.parent.mkdir(parents=True, exist_ok=True)
-
-# Database session
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-
-engine = create_engine(
-    DATABASE_URL, 
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Dependency
+# Database dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -494,9 +477,9 @@ async def health_check(db: Session = Depends(get_db)):
     """
     try:
         # Test database connection
-        start_time = time.time()
-        db.execute("SELECT 1")
-        db_latency = (time.time() - start_time) * 1000  # Convert to milliseconds
+        start_time = datetime.utcnow()
+        db.execute(text("SELECT 1"))
+        db_latency = (datetime.utcnow() - start_time).total_seconds() * 1000  # Convert to milliseconds
         db_status = {
             "status": "connected",
             "latency_ms": round(db_latency, 2)
